@@ -233,16 +233,20 @@ func (hs *HttpService) BuildSignBody(kwargs map[string]string) string {
 	hs.InitTsAndStr()
 	kwargs["api_key"] = hs.c.ApiKey
 	kwargs["timestamp"] = hs.Timestamp
-
-	kwargs["signature_method"] = "HmacSHA256"
-
+	if len(hs.c.SecretKey) > 0 {
+		kwargs["signature_method"] = "RSA"
+	} else {
+		kwargs["signature_method"] = "HmacSHA256"
+	}
 	kwargs["echostr"] = hs.EchoStr
 
 	paramsSortStr := pkg.FormatStringBySign(kwargs)
 	var sign string
-
-	sign, _ = hs.BuildHmacSignV2(paramsSortStr, hs.c.SecretKey)
-
+	if len(hs.c.SecretKey) > 0 {
+		sign, _ = hs.BuildRsaSignV2(paramsSortStr, hs.c.SecretKey)
+	} else {
+		sign, _ = hs.BuildHmacSignV2(paramsSortStr, hs.c.SecretKey)
+	}
 	kwargs["sign"] = sign
 	postData := url.Values{}
 	for k, v := range kwargs {
