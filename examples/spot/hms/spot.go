@@ -19,7 +19,7 @@ func TestCreateOrder() {
 		"amount":    "10",
 		"custom_id": "test",
 	}
-	client.NewSpotService().CreateOrder(data)
+	client.NewOrderService().CreateOrder(data)
 }
 
 func main() {
