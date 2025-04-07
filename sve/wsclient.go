@@ -3,7 +3,7 @@ package sve
 import (
 	"go.uber.org/zap"
 
-	"lbank-connector-go/pkg"
+	"github.com/LBank-exchange/lbank-connector-go/pkg" // 使用完整路径
 )
 
 type WsClient struct {

@@ -14,7 +14,7 @@ import (
 
 	"github.com/tidwall/gjson"
 
-	"lbank-connector-go/pkg"
+	"github.com/LBank-exchange/lbank-connector-go/pkg" // 使用完整路径
 )
 
 type HttpService struct {
@@ -233,20 +233,16 @@ func (hs *HttpService) BuildSignBody(kwargs map[string]string) string {
 	hs.InitTsAndStr()
 	kwargs["api_key"] = hs.c.ApiKey
 	kwargs["timestamp"] = hs.Timestamp
-	if len(hs.c.SecretKey) > 0 {
-		kwargs["signature_method"] = "RSA"
-	} else {
-		kwargs["signature_method"] = "HmacSHA256"
-	}
+
+	kwargs["signature_method"] = "HmacSHA256"
+
 	kwargs["echostr"] = hs.EchoStr
 
 	paramsSortStr := pkg.FormatStringBySign(kwargs)
 	var sign string
-	if len(hs.c.SecretKey) > 0 {
-		sign, _ = hs.BuildRsaSignV2(paramsSortStr, hs.c.SecretKey)
-	} else {
-		sign, _ = hs.BuildHmacSignV2(paramsSortStr, hs.c.SecretKey)
-	}
+
+	sign, _ = hs.BuildHmacSignV2(paramsSortStr, hs.c.SecretKey)
+
 	kwargs["sign"] = sign
 	postData := url.Values{}
 	for k, v := range kwargs {
