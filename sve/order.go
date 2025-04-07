@@ -23,10 +23,21 @@ func (o *OrderService) CancelOrder(data map[string]string) {
 	o.hs.Post(url, params)
 }
 
-func (o *OrderService) CancelClientOrders(data map[string]string) {
+// func (o *OrderService) CancelClientOrders(data map[string]string) {
+// 	url := o.c.Host + PathCancelClientOrders
+// 	params := o.hs.BuildSignBody(data)
+// 	o.hs.Post(url, params)
+// }
+
+// CancelClientOrders 批量取消订单
+func (o *OrderService) CancelClientOrders(data map[string]string) ([]byte, error) {
 	url := o.c.Host + PathCancelClientOrders
 	params := o.hs.BuildSignBody(data)
 	o.hs.Post(url, params)
+	if o.hs.Error != nil {
+		return nil, o.hs.Error
+	}
+	return []byte(o.hs.Text), nil
 }
 
 func (o *OrderService) OrdersInfo(data map[string]string) {
