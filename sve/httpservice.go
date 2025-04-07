@@ -353,7 +353,6 @@ func (hs *HttpService) BuildRsaSignV2(params, secret string) (string, error) {
 	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
 		// 如果 PKCS#1 解析失败，尝试解析为 PKCS#8 私钥
-		hs.c.Logger.Debug(fmt.Sprintf("Failed to parse as PKCS#1: %v, trying PKCS#8", err))
 		key, errPKCS8 := x509.ParsePKCS8PrivateKey(block.Bytes)
 		if errPKCS8 != nil {
 			return "", fmt.Errorf("failed to parse private key - PKCS#1: %v, PKCS#8: %v", err, errPKCS8)
