@@ -2,19 +2,29 @@ package sve
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/hmac"
+	"crypto/md5"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	mrand "math/rand"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/LBank-exchange/lbank-connector-go/pkg"
 	"github.com/tidwall/gjson"
-
-	"github.com/LBank-exchange/lbank-connector-go/pkg" // 使用完整路径
 )
 
 type HttpService struct {
@@ -53,6 +63,7 @@ func WithHeaders(headers map[string]string) KwArgs {
 		hs.Headers = headers
 	}
 }
+
 func WithDebug(debug bool) KwArgs {
 	return func(hs *HttpService) {
 		hs.isDebug = debug
@@ -170,10 +181,6 @@ func (hs *HttpService) BuildRequestHeaders(req *http.Request, headers map[string
 		req.Header.Set(k, v)
 	}
 	return hs
-	//{"Content-Type": 'application/x-www-form-urlencoded',
-	//            "signature_method": self.sign_method,
-	//            'timestamp': self.timestamp,
-	//            'echostr': self.random_str}
 }
 
 func (hs *HttpService) PrintReqInfo(req *http.Request) {
@@ -210,21 +217,59 @@ func (hs *HttpService) Map2String(body map[string]interface{}) string {
 	return pkg.Map2JsonString(body)
 }
 
-// Json https://github.com/tidwall/gjson
 func (hs *HttpService) Json() gjson.Result {
 	return gjson.Parse(hs.Text)
 }
 
 func (hs *HttpService) InitTsAndStr() {
-	hs.Timestamp = pkg.Timestamp()
-	hs.EchoStr = pkg.RandomStr()
+	hs.Timestamp = fmt.Sprintf("%d", time.Now().UnixMilli()) // 毫秒级时间戳
+	hs.EchoStr = randomString(30, 40)                        // 随机长度 30-40
 }
+
+func randomString(minLen, maxLen int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	mrand.Seed(time.Now().UnixNano()) // 初始化随机种子
+	length := mrand.Intn(maxLen-minLen+1) + minLen
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charset[mrand.Intn(len(charset))]
+	}
+	return string(b)
+}
+
+func (hs *HttpService) detectSignatureMethod(secret string) string {
+	// 如果 secret 是空，默认 HMAC-SHA256
+	if len(secret) == 0 {
+		return "HmacSHA256"
+	}
+
+	// 尝试解析为 PEM 格式的 RSA 私钥
+	pemData := []byte(secret)
+	if !strings.Contains(secret, "-----BEGIN") {
+		pemData = []byte("-----BEGIN RSA PRIVATE KEY-----\n" + secret + "\n-----END RSA PRIVATE KEY-----")
+	}
+	block, _ := pem.Decode(pemData)
+	if block != nil {
+		if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+			return "RSA"
+		}
+		if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+			if _, ok := key.(*rsa.PrivateKey); ok {
+				return "RSA"
+			}
+		}
+	}
+	// 如果无法解析为 RSA，则使用 HMAC-SHA256
+	return "HmacSHA256"
+}
+
 func (hs *HttpService) BuildHeader() *HttpService {
 	hd := map[string]string{
 		"Content-Type":     "application/x-www-form-urlencoded",
-		"signature_method": "RSA",
+		"signature_method": hs.SignatureMethod, // 使用检测到的签名方法
 		"timestamp":        hs.Timestamp,
-		"echostr":          hs.EchoStr}
+		"echostr":          hs.EchoStr,
+	}
 	hs.Headers = hd
 	return hs
 }
@@ -233,21 +278,30 @@ func (hs *HttpService) BuildSignBody(kwargs map[string]string) string {
 	hs.InitTsAndStr()
 	kwargs["api_key"] = hs.c.ApiKey
 	kwargs["timestamp"] = hs.Timestamp
-	if len(hs.c.SecretKey) > 0 {
-		kwargs["signature_method"] = "RSA"
-	} else {
-		kwargs["signature_method"] = "HmacSHA256"
-	}
+
+	// 自动检测签名方法
+	hs.SignatureMethod = hs.detectSignatureMethod(hs.c.SecretKey)
+	kwargs["signature_method"] = hs.SignatureMethod
+
 	kwargs["echostr"] = hs.EchoStr
 
-	paramsSortStr := pkg.FormatStringBySign(kwargs)
+	// 按键名排序并拼接为 key=value&key=value 格式
+	paramsSortStr := formatParams(kwargs)
+	// 计算 MD5 并转为大写，与 Python 一致
+	md5Digest := strings.ToUpper(fmt.Sprintf("%x", md5.Sum([]byte(paramsSortStr))))
+
 	var sign string
-	if len(hs.c.SecretKey) > 0 {
-		sign, _ = hs.BuildRsaSignV2(paramsSortStr, hs.c.SecretKey)
+	var err error
+	if hs.SignatureMethod == "RSA" {
+		sign, err = hs.BuildRsaSignV2(md5Digest, hs.c.SecretKey)
 	} else {
-		sign, _ = hs.BuildHmacSignV2(paramsSortStr, hs.c.SecretKey)
+		sign, err = hs.BuildHmacSignV2(md5Digest, hs.c.SecretKey)
+	}
+	if err != nil {
+		hs.c.Logger.Error(fmt.Sprintf("[SignErr] %s", err.Error()))
 	}
 	kwargs["sign"] = sign
+
 	postData := url.Values{}
 	for k, v := range kwargs {
 		postData.Add(k, v)
@@ -259,19 +313,78 @@ func (hs *HttpService) BuildSignBody(kwargs map[string]string) string {
 	return postData.Encode()
 }
 
-// BuildRsaSignV2
+// 辅助函数：参数排序和拼接
+func formatParams(params map[string]string) string {
+	var keys []string
+	for k := range params {
+		if k != "sign" { // 忽略 sign 参数，与 Python 一致
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var pairs []string
+	for _, k := range keys {
+		pairs = append(pairs, fmt.Sprintf("%s=%s", k, params[k]))
+	}
+	return strings.Join(pairs, "&")
+}
+
 func (hs *HttpService) BuildRsaSignV2(params, secret string) (string, error) {
 	if len(secret) == 0 {
 		return "", errors.New("secret is empty")
 	}
-	b := []byte("-----BEGIN RSA PRIVATE KEY-----\n" + secret + "\n-----END RSA PRIVATE KEY-----")
-	privateKey, err := pkg.ParsePKCS1PrivateKey(b)
-	if err != nil {
-		return "", err
+
+	// 调试输出原始密钥
+	hs.c.Logger.Debug(fmt.Sprintf("Raw secret: %s", secret))
+
+	// 如果 secret 不包含 PEM 头，添加 PKCS#1 格式头尾
+	pemData := []byte(secret)
+	if !strings.Contains(secret, "-----BEGIN") {
+		pemData = []byte("-----BEGIN RSA PRIVATE KEY-----\n" + secret + "\n-----END RSA PRIVATE KEY-----")
 	}
-	return pkg.RSASign(params, privateKey), nil
+
+	// 解码 PEM 数据
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return "", errors.New("failed to decode PEM block containing private key")
+	}
+
+	// 尝试解析为 PKCS#1 私钥
+	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		// 如果 PKCS#1 解析失败，尝试解析为 PKCS#8 私钥
+		hs.c.Logger.Debug(fmt.Sprintf("Failed to parse as PKCS#1: %v, trying PKCS#8", err))
+		key, errPKCS8 := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if errPKCS8 != nil {
+			return "", fmt.Errorf("failed to parse private key - PKCS#1: %v, PKCS#8: %v", err, errPKCS8)
+		}
+		// 确保是 RSA 私钥
+		var ok bool
+		privateKey, ok = key.(*rsa.PrivateKey)
+		if !ok {
+			return "", errors.New("parsed PKCS#8 key is not an RSA private key")
+		}
+	}
+
+	// 计算 SHA256 哈希
+	h := sha256.New()
+	h.Write([]byte(params))
+	hashed := h.Sum(nil)
+
+	// 使用 PKCS1v15 签名
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign with RSA: %v", err)
+	}
+
+	return base64.StdEncoding.EncodeToString(signature), nil
 }
 
 func (hs *HttpService) BuildHmacSignV2(params, secret string) (string, error) {
-	return pkg.HmacSha256Base64Signer(params, secret)
+	if len(secret) == 0 {
+		return "", errors.New("secret is empty")
+	}
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(params))
+	return fmt.Sprintf("%x", h.Sum(nil)), nil // 返回十六进制字符串
 }
