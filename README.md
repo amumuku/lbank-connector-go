@@ -13,13 +13,13 @@
 
 ## Installation
 ```shell
-go get github.com/amumuku/lbank-connector-go
+go get github.com/LBank-exchange/lbank-connector-go
 ```
 
 ## Import
 ```golang
 import (
-    "github.com/amumuku/lbank-connector-go"
+    "github.com/LBank-exchange/lbank-connector-go"
 )
 ```
 ## Authentication
@@ -35,7 +35,7 @@ Create an  example
 package main
 
 import (
-	"github.com/amumuku/lbank-connector-go"
+	"github.com/LBank-exchange/lbank-connector-go"
 )
 
 // rsa
